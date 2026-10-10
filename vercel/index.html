@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CloudReview</title>
+<style>
+  :root { --bg:#0d1117; --card:#161b22; --line:#30363d; --fg:#e6edf3; --mut:#8b949e;
+          --red:#cf222e; --yellow:#9a6700; --green:#1a7f37; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:15px/1.55 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { max-width:760px; margin:0 auto; padding:24px 16px 120px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  .sub { color:var(--mut); margin:0 0 20px; }
+  .samples button { background:none; border:1px solid var(--line); color:var(--fg);
+         border-radius:20px; padding:5px 12px; margin:0 8px 8px 0; cursor:pointer; font-size:13px; }
+  .samples button:hover { border-color:var(--mut); }
+  .msg { padding:12px 14px; border-radius:10px; margin:10px 0; white-space:pre-wrap;
+         word-wrap:break-word; }
+  .user { background:#1f6feb22; border:1px solid #1f6feb55; }
+  .bot  { background:var(--card); border:1px solid var(--line); }
+  .badge { display:inline-block; color:#fff; font-weight:600; padding:6px 12px;
+         border-radius:8px; margin:6px 0; }
+  .ground { color:var(--mut); font-size:12px; margin-top:6px; }
+  form { position:fixed; bottom:0; left:0; right:0; background:var(--bg);
+         border-top:1px solid var(--line); padding:12px 16px; }
+  .inner { max-width:760px; margin:0 auto; display:flex; gap:8px; }
+  textarea { flex:1; resize:none; height:52px; background:var(--card); color:var(--fg);
+         border:1px solid var(--line); border-radius:10px; padding:10px; font:inherit; }
+  button.go { background:#238636; color:#fff; border:0; border-radius:10px;
+         padding:0 20px; font-weight:600; cursor:pointer; }
+  button.go:disabled { opacity:.5; cursor:default; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🔍 CloudReview</h1>
+  <p class="sub">Paste Terraform, CloudFormation, CDK, or AWS CLI. Get a trust score and
+     copy-paste fixes in plain English. Ask follow-ups like a colleague.</p>
+
+  <div class="samples">
+    <button data-s='resource "aws_s3_bucket" "data" { bucket = "my-data" }
+resource "aws_s3_bucket_acl" "data" {
+  bucket = aws_s3_bucket.data.id
+  acl    = "public-read"
+}
+resource "aws_iam_policy" "p" {
+  policy = jsonencode({
+    Statement = [{ Effect = "Allow", Action = "*", Resource = "*" }]
+  })
+}'>Leaky S3 + IAM wildcard</button>
+    <button data-s='resource "aws_security_group" "ssh" {
+  name = "ssh"
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}'>Open SSH security group</button>
+  </div>
+
+  <div id="chat"></div>
+</div>
+
+<form id="f">
+  <div class="inner">
+    <textarea id="inp" placeholder="Paste IaC or ask a question..."></textarea>
+    <button class="go" id="go" type="submit">Review</button>
+  </div>
+</form>
+
+<script>
+const chat = document.getElementById("chat");
+const inp  = document.getElementById("inp");
+const go   = document.getElementById("go");
+let history = [];
+
+document.querySelectorAll(".samples button").forEach(b =>
+  b.onclick = () => { inp.value = b.dataset.s; inp.focus(); });
+
+function bubble(cls, text) {
+  const d = document.createElement("div");
+  d.className = "msg " + cls;
+  d.textContent = text;
+  chat.appendChild(d);
+  return d;
+}
+
+function badge(host, score) {
+  if (score === null || score === undefined) return;
+  const color = score >= 80 ? "#1a7f37" : score >= 50 ? "#9a6700" : "#cf222e";
+  const label = score >= 80 ? "looks production-ready" : score >= 50 ? "needs work" : "do not ship this";
+  const d = document.createElement("div");
+  d.className = "badge";
+  d.style.background = color;
+  d.textContent = `Trust score: ${score}/100 - ${label}`;
+  host.appendChild(d);
+}
+
+document.getElementById("f").onsubmit = async (e) => {
+  e.preventDefault();
+  const text = inp.value.trim();
+  if (!text) return;
+  inp.value = "";
+  bubble("user", text);
+  history.push({ role: "user", content: [{ text }] });
+
+  go.disabled = true;
+  const out = bubble("bot", "Reviewing...");
+  try {
+    const r = await fetch("/api/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: history }),
+    });
+    const data = await r.json();
+    out.textContent = "";
+    if (data.error) { out.textContent = "⚠️ " + data.error; }
+    else {
+      badge(out, data.score);
+      out.appendChild(document.createTextNode(data.text));
+      if (data.trace && data.trace.length) {
+        const g = document.createElement("div");
+        g.className = "ground";
+        g.textContent = `🔎 grounded in ${data.trace.length} knowledge-base lookup(s)`;
+        out.appendChild(g);
+      }
+      history.push({ role: "assistant", content: [{ text: data.text }] });
+    }
+  } catch (err) {
+    out.textContent = "⚠️ request failed: " + err;
+  } finally {
+    go.disabled = false;
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+};
+</script>
+</body>
+</html>

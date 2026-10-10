@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/review.py": {
+      "maxDuration": 60
+    }
+  }
+}

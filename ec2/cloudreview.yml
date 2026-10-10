@@ -1,0 +1,155 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudReview - Streamlit IaC-review agent on a free-tier EC2 instance
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.micro
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Default: ami-00e236d9d38e7c625
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: ashwini-oregon
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags: [{Key: Name, Value: cloudreview-vpc}]
+
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.0.0/24
+      MapPublicIpOnLaunch: true
+      AvailabilityZone: !Select [0, !GetAZs '']
+
+  Igw:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags: [{Key: Name, Value: cloudreview-igw}]
+
+  IgwAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref Igw
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IgwAttach
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref Igw
+
+  SubnetRouteAssoc:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: bedrock-review
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [bedrock:InvokeModel, bedrock:InvokeModelWithResponseStream]
+                Resource:
+                  - !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/us.amazon.nova-micro-v1:0
+                  - arn:aws:bedrock:*::foundation-model/amazon.nova-micro-v1:0
+              - Effect: Allow
+                Action: [bedrock:Retrieve, bedrock:RetrieveAndGenerate]
+                Resource: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:knowledge-base/BF2T5CZDI5
+              - Effect: Allow
+                Action: [bedrock:GetKnowledgeBase, bedrock:ListKnowledgeBases]
+                Resource: '*'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CloudReview public web
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8501
+          ToPort: 8501
+          CidrIp: 0.0.0.0/0
+          Description: public Streamlit (demo only)
+
+  Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      IamInstanceProfile: !Ref InstanceProfile
+      SubnetId: !Ref Subnet
+      SecurityGroupIds: [!Ref SecurityGroup]
+      Tags: [{Key: Name, Value: cloudreview}]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          dnf install -y python3-pip
+          mkdir -p /opt/cloudreview
+          python3 -m venv /opt/cloudreview/venv
+          /opt/cloudreview/venv/bin/pip install --quiet --upgrade pip
+          /opt/cloudreview/venv/bin/pip install --quiet streamlit boto3
+          echo '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' | base64 -d | tar xz -C /opt/cloudreview
+          cat >/etc/systemd/system/cloudreview.service <<'UNIT'
+          [Unit]
+          Description=CloudReview Streamlit
+          After=network-online.target
+          [Service]
+          WorkingDirectory=/opt/cloudreview
+          Environment=AWS_REGION=us-west-2
+          ExecStart=/opt/cloudreview/venv/bin/streamlit run app.py --server.headless true --server.port 8501 --server.address 0.0.0.0
+          Restart=always
+          User=ec2-user
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+          systemctl daemon-reload
+          systemctl enable --now cloudreview
+
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref Instance
+
+Outputs:
+  InstanceId:
+    Value: !Ref Instance
+  PublicIp:
+    Value: !Ref ElasticIp
+  Url:
+    Value: !Sub http://${ElasticIp.PublicIp}:8501
